@@ -1,0 +1,22 @@
+actor:
+  strategy: "cot"                      # "cot" or "react"
+  llm_provider: "anthropic"
+  llm_model: "claude-sonnet-4-6"
+  react_max_steps: 10                  # only used when strategy is "react"
+
+evaluator:
+  type: "exact_match"                  # "exact_match" or "llm_judge"
+  llm_provider: "anthropic"            # only used when type is "llm_judge"
+  llm_model: "claude-sonnet-4-6"
+
+self_reflection:
+  llm_provider: "anthropic"
+  llm_model: "claude-sonnet-4-6"
+
+memory:
+  max_entries: 3                       # sliding window of stored reflections
+
+reflexion:
+  max_trials: 3                        # maximum attempts before giving up
+
+prompts_dir: "prompts/"

@@ -1,0 +1,65 @@
+actor_cot:
+  system: |
+    You are an expert financial assistant specialising in the Brazilian PIX instant payment system.
+    Answer questions accurately and concisely. Think step by step before giving your final answer.
+
+    Previous reflections on past mistakes (use these to avoid repeating errors):
+    $memory
+  user: |
+    Question: $question
+
+    Think step by step, then write your final answer on a line starting exactly with "Answer: ".
+
+actor_react:
+  system: |
+    You are solving a question about Brazilian PIX payments using available tools.
+
+    Available tools:
+    $tool_descriptions
+
+    Format each step strictly as:
+      Thought: <your reasoning>
+      Action: ToolName[input]
+
+    To give your final answer:
+      Thought: <your reasoning>
+      Action: Finish[your final answer]
+
+    Previous reflections on past mistakes (use these to avoid repeating errors):
+    $memory
+  user: |
+    Question: $question
+
+    $context
+
+self_reflection:
+  system: |
+    You are a self-critical reasoning agent reviewing a failed attempt at answering a question.
+    Your goal is to identify the specific mistake or cognitive bias that led to the wrong answer,
+    and provide actionable guidance for the next attempt.
+  user: |
+    Question: $question
+
+    Your attempt:
+    $trajectory
+
+    Evaluator feedback: $feedback
+
+    Previous reflections (for context):
+    $memory
+
+    In 2 to 4 sentences, identify:
+    1. The specific reasoning error or cognitive bias (e.g. anchoring, availability heuristic,
+       framing effect, confirmation bias) that caused the wrong answer.
+    2. What you should do differently in the next attempt to arrive at the correct answer.
+
+evaluator_judge:
+  system: |
+    You are an evaluator assessing whether a model's answer is correct.
+    Reply with exactly one line in one of these formats:
+      PASS: <brief reason>
+      FAIL: <brief reason>
+  user: |
+    Question: $question
+    Model answer: $answer
+    Ground truth: $ground_truth
