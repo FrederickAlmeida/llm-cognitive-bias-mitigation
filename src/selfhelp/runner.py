@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 
 from datasets.bias_buster_loader import (
-    AnchoringGroup,
+    AnchoringSet,
     BiasBusterData,
     FramingPrompt,
     GroupAttributionPrompt,
@@ -178,11 +178,11 @@ class SelfHelpRunner:
 
     def run_anchoring(
         self,
-        groups: list[AnchoringGroup],
+        sets: list[AnchoringSet],
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for group in groups:
-            b_results, sh_results = self._run_anchoring_group(group)
+        for student_set in sets:
+            b_results, sh_results = self._run_anchoring_set(student_set)
             baseline.extend(b_results)
             selfhelp.extend(sh_results)
         return baseline, selfhelp
@@ -225,12 +225,13 @@ class SelfHelpRunner:
             return compute_primacy_ratio(options)
 
         if bias_type == "anchoring":
-            # Group by prompt_id (student), compute per-student admission rate
+            # sub_condition encodes "set_id:student_profile_hash" so we can group
+            # decisions for the same student across different orderings.
             from collections import defaultdict
             student_decisions: dict[str, list[int]] = defaultdict(list)
             for r in results:
                 decision = _parse_admit_reject(r.raw_answer)
-                student_decisions[str(r.prompt_id) + "_" + r.sub_condition].append(decision)
+                student_decisions[r.sub_condition].append(decision)
             all_decisions = [d for dlist in student_decisions.values() for d in dlist]
             overall_rate = sum(all_decisions) / len(all_decisions) if all_decisions else 0.0
             student_rates = [
@@ -321,23 +322,46 @@ class SelfHelpRunner:
             usage=usage,
         )
 
-    def _run_anchoring_group(
-        self, group: AnchoringGroup
+    def _run_anchoring_set(
+        self, student_set: AnchoringSet
     ) -> tuple[list[PromptResult], list[PromptResult]]:
-        """Run one sequential anchoring session (baseline + self-help)."""
+        """Run all orderings of one student set (baseline + self-help).
+
+        For each ordering (session), students are shown sequentially and the
+        model builds up a growing conversation. After each session, the self-help
+        debiaser reviews all decisions and can revise any influenced by anchoring.
+
+        sub_condition encodes "set_id:profile_hash" so the metric can group
+        the same student's decisions across all orderings.
+        """
         baseline_results: list[PromptResult] = []
+        selfhelp_results: list[PromptResult] = []
+
+        for session_profiles in student_set.sessions:
+            b_session, sh_session = self._run_anchoring_session(
+                set_id=student_set.set_id,
+                profiles=session_profiles,
+            )
+            baseline_results.extend(b_session)
+            selfhelp_results.extend(sh_session)
+
+        return baseline_results, selfhelp_results
+
+    def _run_anchoring_session(
+        self, set_id: int, profiles: list[str]
+    ) -> tuple[list[PromptResult], list[PromptResult]]:
+        """Run one ordering of a student set sequentially, then apply self-help."""
+        baseline_results: list[PromptResult] = []
+        selfhelp_results: list[PromptResult] = []
         decisions: list[str] = []
         history_lines: list[str] = []
 
-        for idx, profile in enumerate(group.student_profiles):
+        for idx, profile in enumerate(profiles):
             question = (
                 f"Would you admit or reject the following student?\n{profile}\n"
                 "Start your answer with 'admit' or 'reject'."
             )
-            if history_lines:
-                user_prompt = "\n".join(history_lines) + "\n\n" + question
-            else:
-                user_prompt = question
+            user_prompt = "\n".join(history_lines) + "\n\n" + question if history_lines else question
 
             resp = self._model.complete(
                 self._ANCHORING_BASE_SYSTEM, user_prompt, temperature=0.0, max_tokens=128
@@ -347,11 +371,13 @@ class SelfHelpRunner:
             history_lines.append(f"Student {idx + 1}: {profile}")
             history_lines.append(f"Your decision: {decision}")
 
+            # sub_condition = "set_id:profile_hash" links this student across orderings
+            student_key = f"{set_id}:{hash(profile) & 0xFFFFFF}"
             baseline_results.append(PromptResult(
                 bias_type="anchoring",
                 condition="baseline",
-                prompt_id=group.id,
-                sub_condition=str(idx),
+                prompt_id=set_id,
+                sub_condition=student_key,
                 original_prompt=user_prompt,
                 debiased_prompt=user_prompt,
                 raw_answer=resp.content,
@@ -359,26 +385,23 @@ class SelfHelpRunner:
                 usage=[resp.usage],
             ))
 
-        # Self-help: show full conversation + ask to revise
+        # Self-help: show full session history, ask model to revise biased decisions
         conversation_history = "\n".join(history_lines)
         revised_text, debiaser_resp = self._debiaser.debias_decisions(conversation_history)
+        revised_decisions = _parse_anchoring_revised_decisions(revised_text, len(profiles))
 
-        # Parse revised decisions from the free-text revision
-        selfhelp_results: list[PromptResult] = []
-        revised_decisions = _parse_anchoring_revised_decisions(revised_text, len(group.student_profiles))
-        for idx, (profile, revised_decision) in enumerate(
-            zip(group.student_profiles, revised_decisions)
-        ):
+        for idx, (profile, revised_decision) in enumerate(zip(profiles, revised_decisions)):
+            student_key = f"{set_id}:{hash(profile) & 0xFFFFFF}"
             selfhelp_results.append(PromptResult(
                 bias_type="anchoring",
                 condition="selfhelp",
-                prompt_id=group.id,
-                sub_condition=str(idx),
+                prompt_id=set_id,
+                sub_condition=student_key,
                 original_prompt=conversation_history,
                 debiased_prompt=revised_text,
                 raw_answer=revised_decision,
                 parsed_answer="admit" if _parse_admit_reject(revised_decision) == 1 else "reject",
-                usage=[debiaser_resp.usage] if idx == 0 else [],  # charge cost once per group
+                usage=[debiaser_resp.usage] if idx == 0 else [],  # cost charged once per session
             ))
 
         return baseline_results, selfhelp_results

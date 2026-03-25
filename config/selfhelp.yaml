@@ -1,6 +1,6 @@
 debiaser:
-  llm_provider: "anthropic"        # uses Claude for the prompt rewriting step
-  llm_model: "claude-sonnet-4-6"
+  llm_provider: "openai"           # switch to "anthropic" + claude-sonnet-4-6 when key is available
+  llm_model: "gpt-4.1-mini"
 
 model:                             # model being evaluated for cognitive bias
   llm_provider: "openai"

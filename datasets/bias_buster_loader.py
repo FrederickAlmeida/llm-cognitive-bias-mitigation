@@ -45,10 +45,20 @@ class StatusQuoPrompt:
 
 
 @dataclass
-class AnchoringGroup:
-    """One sequential session: a list of student profiles shown one after another."""
-    id: int
-    student_profiles: list[str] = field(default_factory=list)
+class AnchoringSet:
+    """All orderings (permutations) of one student set.
+
+    The anchoring bias test shows the SAME N students in different sequential
+    orders. Each ordering is a list of N student profiles. To measure anchoring
+    bias, compare each student's admission rate across all orderings.
+    """
+    set_id: int
+    n_students: int
+    sessions: list[list[str]] = field(default_factory=list)  # each sub-list = one ordering
+
+
+# Keep old name as alias for backward compatibility in tests
+AnchoringGroup = AnchoringSet
 
 
 @dataclass
@@ -57,7 +67,7 @@ class BiasBusterData:
     group_attribution: list[GroupAttributionPrompt]
     status_quo: list[StatusQuoPrompt]
     primacy: list[StatusQuoPrompt]      # neutral status_quo prompts reused for primacy
-    anchoring: list[AnchoringGroup]
+    anchoring: list[AnchoringSet]
 
 
 # ── Loader ─────────────────────────────────────────────────────────────────────
@@ -121,13 +131,23 @@ class BiasBusterLoader:
             for _, row in sq_df.iterrows()
         ]
 
-        # Anchoring: group student profiles by session id.
+        # Anchoring: each unique `id` is a student SET shown in multiple orderings.
+        # Structure: N_students profiles repeat in different sequential orders.
+        # e.g. id=99 has 8 unique students × 11 orderings = 88 rows.
         groups: dict[int, list[str]] = {}
         for _, row in anchoring_df.iterrows():
             gid = int(row["id"])
             groups.setdefault(gid, []).append(str(row["prompts"]))
-        anchoring = [AnchoringGroup(id=gid, student_profiles=profiles)
-                     for gid, profiles in groups.items()]
+
+        anchoring = []
+        for set_id, all_profiles in groups.items():
+            sessions = _split_into_sessions(all_profiles)
+            if sessions:
+                anchoring.append(AnchoringSet(
+                    set_id=set_id,
+                    n_students=len(sessions[0]),
+                    sessions=sessions,
+                ))
 
         return BiasBusterData(
             framing=framing,
@@ -136,3 +156,32 @@ class BiasBusterLoader:
             primacy=primacy,
             anchoring=anchoring,
         )
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _split_into_sessions(profiles: list[str]) -> list[list[str]]:
+    """Split a flat list of anchoring profiles into per-ordering sessions.
+
+    Within each set, N unique student profiles repeat in different sequential
+    orders. This function detects N by finding the first repeated profile,
+    then chunks the list into sessions of size N.
+
+    Incomplete final chunks (< N) are discarded.
+    """
+    # Detect n_students: count unique profiles until first repeat
+    seen: list[str] = []
+    for p in profiles:
+        if p in seen:
+            break
+        seen.append(p)
+    n_students = len(seen)
+    if n_students == 0:
+        return []
+
+    # Chunk into complete sessions
+    return [
+        profiles[i: i + n_students]
+        for i in range(0, len(profiles), n_students)
+        if len(profiles[i: i + n_students]) == n_students
+    ]
