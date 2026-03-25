@@ -1,0 +1,23 @@
+debiaser:
+  llm_provider: "anthropic"        # uses Claude for the prompt rewriting step
+  llm_model: "claude-sonnet-4-6"
+
+model:                             # model being evaluated for cognitive bias
+  llm_provider: "openai"
+  llm_model: "gpt-4.1-nano"
+
+dataset:
+  name: "jecht/cognitive_bias"
+  # Subset of biases to run. Comment out any to skip.
+  biases:
+    - framing
+    - group_attribution
+    - status_quo
+    - primacy
+    - anchoring
+  limit: null                      # integer to cap samples per bias (null = all)
+
+output:
+  results_dir: "results/"
+
+prompts_dir: "prompts/"

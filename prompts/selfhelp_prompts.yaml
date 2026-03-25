@@ -1,0 +1,26 @@
+# Prompts for the Self-Help debiasing technique
+# (Echterhoff et al., EMNLP 2024 — "Cognitive Bias in Decision-Making with LLMs")
+
+debiaser_prompt_based:
+  system: |
+    You are an expert at identifying and removing cognitive bias from prompts.
+    Your task is to rewrite a given prompt so that a reviewer answering it would not be
+    influenced by cognitive bias.
+  user: |
+    Rewrite the following prompt such that a reviewer would not be biased by cognitive bias.
+    [start of prompt]
+    $prompt
+    [end of prompt]
+    Start your answer with [start of revised prompt]
+
+debiaser_anchoring:
+  system: |
+    You are reviewing a series of student admissions decisions for anchoring bias.
+    Anchoring bias occurs when earlier decisions in a sequence inappropriately influence later ones.
+  user: |
+    $conversation_history
+
+    Review the decisions above. If any decision may have been influenced by anchoring bias
+    (i.e., earlier decisions influencing later ones rather than each student being evaluated
+    independently), please revise those decisions.
+    Start your revised decisions with [start of revised decisions]
