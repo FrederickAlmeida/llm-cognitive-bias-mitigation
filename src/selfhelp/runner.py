@@ -56,9 +56,21 @@ class BiasMetrics:
     n_baseline: int
     n_selfhelp: int
 
+    # Biases where higher metric value = LESS bias (inverted interpretation)
+    _HIGHER_IS_BETTER = {"anchoring"}
+
     @property
     def delta(self) -> float:
-        """Reduction in bias: positive means self-help improved."""
+        """Reduction in bias: positive means self-help improved.
+
+        For most biases (framing, group_attribution, status_quo, primacy),
+        lower |metric| = less bias, so delta = |baseline| - |selfhelp|.
+
+        For anchoring, higher metric = less bias (more consistent per-student
+        decisions across orderings), so delta = |selfhelp| - |baseline|.
+        """
+        if self.bias_type in self._HIGHER_IS_BETTER:
+            return abs(self.selfhelp_metric) - abs(self.baseline_metric)
         return abs(self.baseline_metric) - abs(self.selfhelp_metric)
 
 

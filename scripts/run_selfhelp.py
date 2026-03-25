@@ -82,7 +82,7 @@ def print_metrics_table(all_metrics: list[BiasMetrics]) -> None:
     print(f"{'Bias':<20} {'Baseline':>10} {'Self-Help':>10} {'Improvement':>12}")
     print("-" * 60)
     for m in all_metrics:
-        improvement = abs(m.baseline_metric) - abs(m.selfhelp_metric)
+        improvement = m.delta
         sign = "+" if improvement >= 0 else ""
         print(
             f"{m.bias_type:<20} "
@@ -91,7 +91,7 @@ def print_metrics_table(all_metrics: list[BiasMetrics]) -> None:
             f"{sign}{improvement:>11.4f}"
         )
     print("=" * 60)
-    print("(Improvement: |baseline| - |selfhelp|; positive = less bias with self-help)")
+    print("(Improvement: positive = less bias with self-help)")
 
 
 def main() -> None:
