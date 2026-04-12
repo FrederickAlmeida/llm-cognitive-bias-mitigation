@@ -8,12 +8,13 @@ class AnthropicClient(LLMClient):
         self.model = model
         self._client = anthropic.Anthropic(api_key=api_key)
 
-    def complete(
+    def _complete(
         self,
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.0,
         max_tokens: int = 1024,
+        json_mode: bool = False,
     ) -> LLMResponse:
         message = self._client.messages.create(
             model=self.model,

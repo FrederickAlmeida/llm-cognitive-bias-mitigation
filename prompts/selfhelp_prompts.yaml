@@ -6,21 +6,33 @@ debiaser_prompt_based:
     You are an expert at identifying and removing cognitive bias from prompts.
     Your task is to rewrite a given prompt so that a reviewer answering it would not be
     influenced by cognitive bias.
+    IMPORTANT rules:
+    - Preserve the original prompt structure exactly. If the prompt asks the reviewer to choose
+      between options (a, b, c, d), your rewritten prompt must also ask them to choose between
+      the same options. Do not turn it into a rubric or evaluation framework.
+    - Only remove or neutralize biasing cues.
+    - Do NOT answer the question yourself. Only rewrite it.
   user: |
-    Rewrite the following prompt such that a reviewer would not be biased by cognitive bias.
+    Rewrite the following prompt to remove cognitive bias. Keep the same format and answer options.
+    Do not answer the question — only rewrite it.
     [start of prompt]
     $prompt
     [end of prompt]
-    Start your answer with [start of revised prompt]
+    Output only the rewritten prompt between these tags:
+    [start of revised prompt]
+    <rewritten prompt here>
+    [end of revised prompt]
 
 debiaser_anchoring:
   system: |
-    You are reviewing a series of student admissions decisions for anchoring bias.
-    Anchoring bias occurs when earlier decisions in a sequence inappropriately influence later ones.
+    You are reviewing a series of student admissions decisions.
+    You MUST respond with a JSON object containing a "decisions" array with one entry per student,
+    in the same order they appear. Each entry must have: {"admitted": true or false, "reasoning": "..."}.
+    Example for 3 students: {"decisions": [{"admitted": true, "reasoning": "..."}, {"admitted": false, "reasoning": "..."}, {"admitted": true, "reasoning": "..."}]}
+    Do not include any text outside the JSON.
   user: |
     $conversation_history
 
-    Review the decisions above. If any decision may have been influenced by anchoring bias
-    (i.e., earlier decisions influencing later ones rather than each student being evaluated
-    independently), please revise those decisions.
-    Start your revised decisions with [start of revised decisions]
+    Review the decisions above. For each student, reconsider your decision — change it if you
+    think it may have been influenced by cognitive bias.
+    Return a JSON object with a "decisions" array containing exactly $n_students entries.

@@ -1,0 +1,22 @@
+debiaser:
+  llm_provider: "groq"
+  llm_model: "llama-3.1-8b-instant"
+
+model:                             # model being evaluated for cognitive bias
+  llm_provider: "groq"
+  llm_model: "llama-3.1-8b-instant"
+
+dataset:
+  name: "jecht/cognitive_bias"
+  biases:
+    - framing
+    - group_attribution
+    - status_quo
+    - primacy
+    - anchoring
+  limit: null
+
+output:
+  results_dir: "results/"
+
+prompts_dir: "prompts/"

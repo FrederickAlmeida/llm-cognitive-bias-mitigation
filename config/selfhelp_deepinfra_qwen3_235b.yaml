@@ -1,0 +1,22 @@
+debiaser:
+  llm_provider: "deepinfra"
+  llm_model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
+
+model:                             # model being evaluated for cognitive bias
+  llm_provider: "deepinfra"
+  llm_model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
+
+dataset:
+  name: "jecht/cognitive_bias"
+  biases:
+    - framing
+    - group_attribution
+    - status_quo
+    - primacy
+    - anchoring
+  limit: null
+
+output:
+  results_dir: "results/"
+
+prompts_dir: "prompts/"
