@@ -9,7 +9,6 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -30,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", default="config/selfhelp.yaml")
     p.add_argument("--bias", default=None, help="Run only this bias type")
     p.add_argument("--limit", type=int, default=None, help="Cap samples per bias")
+    p.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Re-run only prompts whose raw_answer was empty in existing result files",
+    )
     return p.parse_args()
 
 
@@ -69,9 +73,9 @@ def save_results(results: list[PromptResult], path: str) -> None:
                 "condition": r.condition,
                 "prompt_id": r.prompt_id,
                 "sub_condition": r.sub_condition,
-                "original_prompt": r.original_prompt[:500],  # truncate for readability
-                "debiased_prompt": r.debiased_prompt[:500],
-                "raw_answer": r.raw_answer[:300],
+                "original_prompt": r.original_prompt,
+                "debiased_prompt": r.debiased_prompt,
+                "raw_answer": r.raw_answer,
                 "parsed_answer": r.parsed_answer,
                 "cost_usd": f"{r.total_cost_usd:.8f}",
             })
@@ -94,6 +98,96 @@ def print_metrics_table(all_metrics: list[BiasMetrics]) -> None:
     print("(Improvement: positive = less bias with self-help)")
 
 
+def _load_failed_ids(prefix: str) -> set[int]:
+    """Return prompt_ids from <prefix>_baseline.csv where raw_answer is empty."""
+    path = f"{prefix}_baseline.csv"
+    if not Path(path).exists():
+        return set()
+    with open(path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return {int(r["prompt_id"]) for r in reader if not r["raw_answer"].strip()}
+
+
+def _filter_bias_data(data, bias: str, failed_ids: set[int]):
+    """Return a copy of the relevant bias list filtered to only failed_ids."""
+    if bias == "anchoring":
+        return [s for s in data.anchoring if s.set_id in failed_ids]
+    lists = {
+        "framing": data.framing,
+        "group_attribution": data.group_attribution,
+        "status_quo": data.status_quo,
+        "primacy": data.primacy,
+    }
+    return [p for p in lists[bias] if p.id in failed_ids]
+
+
+def _merge_results(path: str, new_results: list[PromptResult], failed_ids: set[int]) -> None:
+    """Replace rows with failed_ids in an existing CSV with new_results, then save."""
+    existing: list[dict] = []
+    if Path(path).exists():
+        with open(path, encoding="utf-8") as f:
+            existing = [r for r in csv.DictReader(f) if int(r["prompt_id"]) not in failed_ids]
+
+    fieldnames = [
+        "bias_type", "condition", "prompt_id", "sub_condition",
+        "original_prompt", "debiased_prompt", "raw_answer", "parsed_answer", "cost_usd",
+    ]
+    new_rows = [
+        {
+            "bias_type": r.bias_type,
+            "condition": r.condition,
+            "prompt_id": r.prompt_id,
+            "sub_condition": r.sub_condition,
+            "original_prompt": r.original_prompt,
+            "debiased_prompt": r.debiased_prompt,
+            "raw_answer": r.raw_answer,
+            "parsed_answer": r.parsed_answer,
+            "cost_usd": f"{r.total_cost_usd:.8f}",
+        }
+        for r in new_results
+    ]
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(existing)
+        writer.writerows(new_rows)
+
+
+def _load_results_from_csv(path: str) -> list[PromptResult]:
+    """Reload PromptResult objects from a saved CSV for metric recomputation."""
+    from src.reflexion.llm.base import TokenUsage
+    results = []
+    if not Path(path).exists():
+        return results
+    with open(path, encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            cost = float(r["cost_usd"]) if r["cost_usd"] else 0.0
+            results.append(PromptResult(
+                bias_type=r["bias_type"],
+                condition=r["condition"],
+                prompt_id=int(r["prompt_id"]),
+                sub_condition=r["sub_condition"],
+                original_prompt=r["original_prompt"],
+                debiased_prompt=r["debiased_prompt"],
+                raw_answer=r["raw_answer"],
+                parsed_answer=r["parsed_answer"],
+                usage=[TokenUsage(0, 0, 0, "", cost)],
+            ))
+    return results
+
+
+def _model_slug(model_name: str) -> str:
+    """Sanitize a model name for use in filenames (e.g. 'openai/gpt-oss-20b' → 'gpt-oss-20b')."""
+    # Drop provider prefix (anything before the last '/')
+    slug = model_name.rsplit("/", 1)[-1]
+    # Replace any remaining unsafe characters
+    for ch in r'\/:*?"<>| ':
+        slug = slug.replace(ch, "-")
+    return slug
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -105,7 +199,7 @@ def main() -> None:
 
     results_dir = cfg["output"]["results_dir"]
     prompts_dir = cfg.get("prompts_dir", "prompts/")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_slug = _model_slug(cfg["model"]["llm_model"])
 
     print(f"Loading dataset (limit={limit})...")
     loader = BiasBusterLoader()
@@ -132,7 +226,25 @@ def main() -> None:
             print(f"[WARN] Unknown bias type '{bias}', skipping.")
             continue
 
-        print(f"\nRunning {bias}...")
+        prefix = os.path.join(results_dir, f"{model_slug}_{bias}")
+
+        if args.retry_failed:
+            failed_ids = _load_failed_ids(prefix)
+            if not failed_ids:
+                print(f"\nSkipping {bias} — no failed cases found.")
+                continue
+            print(f"\nRetrying {bias} ({len(failed_ids)} failed prompt IDs)...")
+            filtered = _filter_bias_data(data, bias, failed_ids)
+            bias_dispatch[bias] = {
+                "framing": lambda f=filtered: runner.run_framing(f),
+                "group_attribution": lambda f=filtered: runner.run_group_attribution(f),
+                "status_quo": lambda f=filtered: runner.run_status_quo(f),
+                "primacy": lambda f=filtered: runner.run_primacy(f),
+                "anchoring": lambda f=filtered: runner.run_anchoring(f),
+            }[bias]
+        else:
+            print(f"\nRunning {bias}...")
+
         baseline, selfhelp = bias_dispatch[bias]()
         metrics = runner.compute_metrics(bias, baseline, selfhelp)
 
@@ -144,31 +256,31 @@ def main() -> None:
               f"selfhelp={metrics.selfhelp_metric:.4f}  "
               f"n={metrics.n_baseline}")
 
-    # Save outputs
-    baseline_path = os.path.join(results_dir, f"run_{timestamp}_baseline.csv")
-    selfhelp_path = os.path.join(results_dir, f"run_{timestamp}_selfhelp.csv")
-    metrics_path = os.path.join(results_dir, f"run_{timestamp}_metrics.json")
+        if args.retry_failed:
+            _merge_results(f"{prefix}_baseline.csv", baseline, failed_ids)
+            _merge_results(f"{prefix}_selfhelp.csv", selfhelp, failed_ids)
+            # Recompute metrics from the full merged files
+            full_baseline = _load_results_from_csv(f"{prefix}_baseline.csv")
+            full_selfhelp = _load_results_from_csv(f"{prefix}_selfhelp.csv")
+            metrics = runner.compute_metrics(bias, full_baseline, full_selfhelp)
+        else:
+            save_results(baseline, f"{prefix}_baseline.csv")
+            save_results(selfhelp, f"{prefix}_selfhelp.csv")
 
-    save_results(all_baseline, baseline_path)
-    save_results(all_selfhelp, selfhelp_path)
-
-    Path(metrics_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump(
-            [
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        with open(f"{prefix}_metrics.json", "w", encoding="utf-8") as f:
+            json.dump(
                 {
-                    "bias_type": m.bias_type,
-                    "baseline_metric": m.baseline_metric,
-                    "selfhelp_metric": m.selfhelp_metric,
-                    "delta": m.delta,
-                    "n_baseline": m.n_baseline,
-                    "n_selfhelp": m.n_selfhelp,
-                }
-                for m in all_metrics
-            ],
-            f,
-            indent=2,
-        )
+                    "bias_type": metrics.bias_type,
+                    "baseline_metric": metrics.baseline_metric,
+                    "selfhelp_metric": metrics.selfhelp_metric,
+                    "delta": metrics.delta,
+                    "n_baseline": metrics.n_baseline,
+                    "n_selfhelp": metrics.n_selfhelp,
+                },
+                f,
+                indent=2,
+            )
 
     total_cost = sum(r.total_cost_usd for r in all_baseline + all_selfhelp)
     print_metrics_table(all_metrics)

@@ -17,8 +17,8 @@ from src.reflexion.llm.base import LLMResponse
 from src.reflexion.llm import LLMClient
 
 
-_REVISED_PROMPT_TAG = "[start of revised prompt]"
-_REVISED_DECISIONS_TAG = "[start of revised decisions]"
+_REVISED_PROMPT_START = "[start of revised prompt]"
+_REVISED_PROMPT_END = "[end of revised prompt]"
 
 
 class SelfHelpDebiaser:
@@ -45,35 +45,47 @@ class SelfHelpDebiaser:
         user = Template(user_template).safe_substitute({"prompt": prompt})
 
         response = self._llm.complete(system, user, temperature=0.0, max_tokens=2048)
-        debiased = _extract_after_tag(response.content, _REVISED_PROMPT_TAG)
+        debiased = _extract_between_tags(response.content, _REVISED_PROMPT_START, _REVISED_PROMPT_END)
         return debiased, response
 
-    def debias_decisions(self, conversation_history: str) -> tuple[str, LLMResponse]:
+    def debias_decisions(
+        self, conversation_history: str, n_students: int,
+    ) -> tuple[str, LLMResponse]:
         """Ask the LLM to revise its anchoring-biased sequential decisions.
 
         Args:
             conversation_history: full text of the sequential session including
                 all student profiles and the model's previous decisions.
+            n_students: number of students in the session (for the prompt and
+                to validate the JSON output).
 
         Returns:
-            (revised_decisions, llm_response).
+            (revised_json, llm_response).
         """
         system = self._prompts["debiaser_anchoring"]["system"]
         user_template = self._prompts["debiaser_anchoring"]["user"]
         user = Template(user_template).safe_substitute(
-            {"conversation_history": conversation_history}
+            {"conversation_history": conversation_history, "n_students": n_students}
         )
 
-        response = self._llm.complete(system, user, temperature=0.0, max_tokens=2048)
-        revised = _extract_after_tag(response.content, _REVISED_DECISIONS_TAG)
-        return revised, response
+        response = self._llm.complete(
+            system, user, temperature=0.0, max_tokens=2048, json_mode=True,
+        )
+        return response.content, response
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _extract_after_tag(text: str, tag: str) -> str:
-    """Return everything after `tag` in `text`, stripped. Falls back to full text."""
-    idx = text.find(tag)
-    if idx == -1:
+def _extract_between_tags(text: str, start_tag: str, end_tag: str) -> str:
+    """Return text between start_tag and end_tag, stripped.
+    Falls back to everything after start_tag if end_tag is missing,
+    or the full text if start_tag is also missing.
+    """
+    start_idx = text.find(start_tag)
+    if start_idx == -1:
         return text.strip()
-    return text[idx + len(tag):].strip()
+    content_start = start_idx + len(start_tag)
+    end_idx = text.find(end_tag, content_start)
+    if end_idx == -1:
+        return text[content_start:].strip()
+    return text[content_start:end_idx].strip()

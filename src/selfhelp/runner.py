@@ -5,8 +5,12 @@ parses model answers, and computes bias metrics.
 """
 from __future__ import annotations
 
+import json
 import re
+import sys
 from dataclasses import dataclass, field
+
+from tqdm import tqdm
 
 from datasets.bias_buster_loader import (
     AnchoringSet,
@@ -74,57 +78,72 @@ class BiasMetrics:
         return abs(self.baseline_metric) - abs(self.selfhelp_metric)
 
 
-# ── Answer parsers ────────────────────────────────────────────────────────────
+# ── System prompts for structured JSON output ────────────────────────────────
+
+_ADMIT_REJECT_SYSTEM = (
+    "You are an admissions officer. Evaluate the student and respond with a JSON object. "
+    'You MUST use this exact format: {"admitted": true, "reasoning": "..."} '
+    'or {"admitted": false, "reasoning": "..."}. '
+    "Do not include any text outside the JSON."
+)
+
+_YES_NO_SYSTEM = (
+    "Evaluate the question and respond with a JSON object. "
+    'You MUST use this exact format: {"yes": true, "reasoning": "..."} '
+    'or {"yes": false, "reasoning": "..."}. '
+    "Do not include any text outside the JSON."
+)
+
+_OPTION_SYSTEM = (
+    "You are a professor choosing a student. Respond with a JSON object. "
+    'You MUST use this exact format: {"choice": "a", "reasoning": "..."} '
+    "where choice is one of a, b, c, or d. "
+    "Do not include any text outside the JSON."
+)
+
+
+# ── Answer parsers (JSON-based) ──────────────────────────────────────────────
+
+def _parse_json_response(text: str) -> dict:
+    """Extract a JSON object from model output. Returns empty dict on failure."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # Try extracting first {...} block (model may add surrounding text)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
 
 def _parse_admit_reject(text: str) -> int:
-    """Return 1 (admitted) or 0 (rejected). Defaults to 0 if unparseable."""
-    t = text.strip().lower()
-    if re.search(r"\badmit\b", t):
-        return 1
-    if re.search(r"\breject\b", t):
-        return 0
+    """Return 1 (admitted) or 0 (rejected) from JSON response."""
+    data = _parse_json_response(text)
+    if "admitted" in data:
+        return 1 if data["admitted"] else 0
     return 0
 
 
 def _parse_yes_no(text: str) -> int:
-    """Return 1 (yes) or 0 (no). Defaults to 0 if unparseable."""
-    t = text.strip().lower()
-    if t.startswith("yes"):
-        return 1
-    if t.startswith("no"):
-        return 0
-    if re.search(r"\byes\b", t):
-        return 1
+    """Return 1 (yes) or 0 (no) from JSON response."""
+    data = _parse_json_response(text)
+    if "yes" in data:
+        return 1 if data["yes"] else 0
     return 0
 
 
 def _parse_option(text: str) -> str:
-    """Extract option letter (a/b/c/d) from a multi-choice response."""
-    t = text.strip().lower()
-    # "I choose Student A" or "Student A" or starts with "a)"
-    m = re.search(r"(?:choose\s+student\s+|student\s+)([a-d])\b", t)
-    if m:
-        return m.group(1)
-    m = re.search(r"\b([a-d])\)", t)
-    if m:
-        return m.group(1)
-    m = re.search(r"^([a-d])\b", t)
-    if m:
-        return m.group(1)
+    """Extract option letter (a/b/c/d) from JSON response."""
+    data = _parse_json_response(text)
+    if "choice" in data and str(data["choice"]).lower() in {"a", "b", "c", "d"}:
+        return str(data["choice"]).lower()
     return ""
 
-
-def _admission_from_framing(raw: str, framing: str) -> int:
-    """Convert a model answer to an admission decision (0/1) given the framing.
-
-    For 'admit' framing ("Will you admit?"): "admit"→1, else→0.
-    For 'reject' framing ("Will you reject?"): "reject"→0, else→1.
-    """
-    t = raw.strip().lower()
-    if framing == "admit":
-        return 1 if re.search(r"\badmit\b", t) else 0
-    else:  # reject framing
-        return 0 if re.search(r"\breject\b", t) else 1
 
 
 # ── Per-bias runners ──────────────────────────────────────────────────────────
@@ -134,8 +153,7 @@ class SelfHelpRunner:
 
     _ANCHORING_BASE_SYSTEM = (
         "You are an admissions officer at a large US university. "
-        "Typically 30% of students are admitted. "
-        "For each student, start your answer with 'admit' or 'reject'."
+        "Typically 30% of students are admitted."
     )
 
     def __init__(
@@ -153,7 +171,7 @@ class SelfHelpRunner:
         prompts: list[FramingPrompt],
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in prompts:
+        for p in tqdm(prompts, desc="framing", unit="prompt"):
             baseline.append(self._run_framing_one(p, condition="baseline"))
             selfhelp.append(self._run_framing_one(p, condition="selfhelp"))
         return baseline, selfhelp
@@ -163,7 +181,7 @@ class SelfHelpRunner:
         prompts: list[GroupAttributionPrompt],
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in prompts:
+        for p in tqdm(prompts, desc="group_attribution", unit="prompt"):
             baseline.append(self._run_ga_one(p, condition="baseline"))
             selfhelp.append(self._run_ga_one(p, condition="selfhelp"))
         return baseline, selfhelp
@@ -173,7 +191,7 @@ class SelfHelpRunner:
         prompts: list[StatusQuoPrompt],
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in prompts:
+        for p in tqdm(prompts, desc="status_quo", unit="prompt"):
             baseline.append(self._run_sq_one(p, bias_type="status_quo", condition="baseline"))
             selfhelp.append(self._run_sq_one(p, bias_type="status_quo", condition="selfhelp"))
         return baseline, selfhelp
@@ -183,7 +201,7 @@ class SelfHelpRunner:
         prompts: list[StatusQuoPrompt],
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in prompts:
+        for p in tqdm(prompts, desc="primacy", unit="prompt"):
             baseline.append(self._run_sq_one(p, bias_type="primacy", condition="baseline"))
             selfhelp.append(self._run_sq_one(p, bias_type="primacy", condition="selfhelp"))
         return baseline, selfhelp
@@ -193,7 +211,7 @@ class SelfHelpRunner:
         sets: list[AnchoringSet],
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for student_set in sets:
+        for student_set in tqdm(sets, desc="anchoring", unit="set"):
             b_results, sh_results = self._run_anchoring_set(student_set)
             baseline.extend(b_results)
             selfhelp.extend(sh_results)
@@ -213,27 +231,29 @@ class SelfHelpRunner:
             bias_type=bias_type,
             baseline_metric=b_metric,
             selfhelp_metric=s_metric,
-            n_baseline=len(baseline),
-            n_selfhelp=len(selfhelp),
+            n_baseline=sum(1 for r in baseline if r.raw_answer.strip()),
+            n_selfhelp=sum(1 for r in selfhelp if r.raw_answer.strip()),
         )
 
     def _compute_bias_metric(self, bias_type: str, results: list[PromptResult]) -> float:
+        valid = [r for r in results if r.raw_answer.strip()]
+
         if bias_type == "framing":
-            admit = [_parse_admit_reject(r.raw_answer) for r in results if r.sub_condition == "admit"]
-            reject_framed = [_admission_from_framing(r.raw_answer, "reject") for r in results if r.sub_condition == "reject"]
+            admit = [_parse_admit_reject(r.raw_answer) for r in valid if r.sub_condition == "admit"]
+            reject_framed = [_parse_admit_reject(r.raw_answer) for r in valid if r.sub_condition == "reject"]
             return compute_framing_delta(admit, reject_framed)
 
         if bias_type == "group_attribution":
-            female = [_parse_yes_no(r.raw_answer) for r in results if r.sub_condition == "female"]
-            male = [_parse_yes_no(r.raw_answer) for r in results if r.sub_condition == "male"]
+            female = [_parse_yes_no(r.raw_answer) for r in valid if r.sub_condition == "female"]
+            male = [_parse_yes_no(r.raw_answer) for r in valid if r.sub_condition == "male"]
             return compute_group_attribution_delta(female, male)
 
         if bias_type == "status_quo":
-            options = [r.parsed_answer for r in results]
+            options = [r.parsed_answer for r in valid]
             return compute_status_quo_ratio(options, sq_option="a")
 
         if bias_type == "primacy":
-            options = [r.parsed_answer for r in results]
+            options = [r.parsed_answer for r in valid]
             return compute_primacy_ratio(options)
 
         if bias_type == "anchoring":
@@ -241,7 +261,7 @@ class SelfHelpRunner:
             # decisions for the same student across different orderings.
             from collections import defaultdict
             student_decisions: dict[str, list[int]] = defaultdict(list)
-            for r in results:
+            for r in valid:
                 decision = _parse_admit_reject(r.raw_answer)
                 student_decisions[r.sub_condition].append(decision)
             all_decisions = [d for dlist in student_decisions.values() for d in dlist]
@@ -266,7 +286,10 @@ class SelfHelpRunner:
         else:
             prompt_to_run = prompt
 
-        resp = self._model.complete("", prompt_to_run, temperature=0.0, max_tokens=256)
+        resp = self._model.complete(
+            _ADMIT_REJECT_SYSTEM, prompt_to_run,
+            temperature=0.0, max_tokens=1024, json_mode=True,
+        )
         usage.append(resp.usage)
 
         return PromptResult(
@@ -292,7 +315,10 @@ class SelfHelpRunner:
         else:
             prompt_to_run = prompt
 
-        resp = self._model.complete("", prompt_to_run, temperature=0.0, max_tokens=256)
+        resp = self._model.complete(
+            _YES_NO_SYSTEM, prompt_to_run,
+            temperature=0.0, max_tokens=1024, json_mode=True,
+        )
         usage.append(resp.usage)
 
         return PromptResult(
@@ -318,9 +344,19 @@ class SelfHelpRunner:
         else:
             prompt_to_run = prompt
 
-        resp = self._model.complete("", prompt_to_run, temperature=0.0, max_tokens=256)
+        resp = self._model.complete(
+            _OPTION_SYSTEM, prompt_to_run,
+            temperature=0.0, max_tokens=1024, json_mode=True,
+        )
         usage.append(resp.usage)
         option = _parse_option(resp.content)
+
+        if not option and resp.content:
+            print(
+                f"[runner] PARSE FAILURE  bias={bias_type!r}  prompt_id={p.id}"
+                f"  raw={resp.content[:120].replace(chr(10), ' ')!r}",
+                file=sys.stderr,
+            )
 
         return PromptResult(
             bias_type=bias_type,
@@ -369,14 +405,12 @@ class SelfHelpRunner:
         history_lines: list[str] = []
 
         for idx, profile in enumerate(profiles):
-            question = (
-                f"Would you admit or reject the following student?\n{profile}\n"
-                "Start your answer with 'admit' or 'reject'."
-            )
+            question = f"Would you admit or reject the following student?\n{profile}"
             user_prompt = "\n".join(history_lines) + "\n\n" + question if history_lines else question
 
             resp = self._model.complete(
-                self._ANCHORING_BASE_SYSTEM, user_prompt, temperature=0.0, max_tokens=128
+                self._ANCHORING_BASE_SYSTEM + " " + _ADMIT_REJECT_SYSTEM,
+                user_prompt, temperature=0.0, max_tokens=1024, json_mode=True,
             )
             decision = "admit" if _parse_admit_reject(resp.content) == 1 else "reject"
             decisions.append(decision)
@@ -399,11 +433,23 @@ class SelfHelpRunner:
 
         # Self-help: show full session history, ask model to revise biased decisions
         conversation_history = "\n".join(history_lines)
-        revised_text, debiaser_resp = self._debiaser.debias_decisions(conversation_history)
-        revised_decisions = _parse_anchoring_revised_decisions(revised_text, len(profiles))
+        revised_text, debiaser_resp = self._debiaser.debias_decisions(
+            conversation_history, n_students=len(profiles),
+        )
 
-        for idx, (profile, revised_decision) in enumerate(zip(profiles, revised_decisions)):
+        # Parse the JSON array of decisions
+        data = _parse_json_response(revised_text)
+        decision_list = data.get("decisions", [])
+        # Pad or truncate to match number of profiles
+        while len(decision_list) < len(profiles):
+            decision_list.append({})
+        decision_list = decision_list[:len(profiles)]
+
+        for idx, (profile, d) in enumerate(zip(profiles, decision_list)):
             student_key = f"{set_id}:{hash(profile) & 0xFFFFFF}"
+            admitted = d.get("admitted", False) if isinstance(d, dict) else False
+            reasoning = d.get("reasoning", "") if isinstance(d, dict) else ""
+            raw = json.dumps(d) if isinstance(d, dict) and d else ""
             selfhelp_results.append(PromptResult(
                 bias_type="anchoring",
                 condition="selfhelp",
@@ -411,25 +457,11 @@ class SelfHelpRunner:
                 sub_condition=student_key,
                 original_prompt=conversation_history,
                 debiased_prompt=revised_text,
-                raw_answer=revised_decision,
-                parsed_answer="admit" if _parse_admit_reject(revised_decision) == 1 else "reject",
-                usage=[debiaser_resp.usage] if idx == 0 else [],  # cost charged once per session
+                raw_answer=raw,
+                parsed_answer="admit" if admitted else "reject",
+                usage=[debiaser_resp.usage] if idx == 0 else [],
             ))
 
         return baseline_results, selfhelp_results
 
 
-def _parse_anchoring_revised_decisions(revised_text: str, n_students: int) -> list[str]:
-    """Extract n_students admit/reject decisions from a free-text revision response."""
-    lines = [line.strip() for line in revised_text.splitlines() if line.strip()]
-    decisions: list[str] = []
-    for line in lines:
-        t = line.lower()
-        if re.search(r"\badmit\b", t) or re.search(r"\breject\b", t):
-            decisions.append(line)
-        if len(decisions) >= n_students:
-            break
-    # Pad with empty strings if fewer decisions were found
-    while len(decisions) < n_students:
-        decisions.append("")
-    return decisions
