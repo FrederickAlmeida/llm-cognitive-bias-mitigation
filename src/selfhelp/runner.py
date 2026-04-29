@@ -169,52 +169,93 @@ class SelfHelpRunner:
     def run_framing(
         self,
         prompts: list[FramingPrompt],
+        on_checkpoint=None,
+        checkpoint_every: int = 20,
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in tqdm(prompts, desc="framing", unit="prompt"):
+        last_ckpt = 0
+        for i, p in enumerate(tqdm(prompts, desc="framing", unit="prompt")):
             baseline.append(self._run_framing_one(p, condition="baseline"))
             selfhelp.append(self._run_framing_one(p, condition="selfhelp"))
+            if on_checkpoint and (i + 1) % checkpoint_every == 0:
+                on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
+                last_ckpt = len(baseline)
+        if on_checkpoint and last_ckpt < len(baseline):
+            on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
         return baseline, selfhelp
 
     def run_group_attribution(
         self,
         prompts: list[GroupAttributionPrompt],
+        on_checkpoint=None,
+        checkpoint_every: int = 20,
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in tqdm(prompts, desc="group_attribution", unit="prompt"):
+        last_ckpt = 0
+        for i, p in enumerate(tqdm(prompts, desc="group_attribution", unit="prompt")):
             baseline.append(self._run_ga_one(p, condition="baseline"))
             selfhelp.append(self._run_ga_one(p, condition="selfhelp"))
+            if on_checkpoint and (i + 1) % checkpoint_every == 0:
+                on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
+                last_ckpt = len(baseline)
+        if on_checkpoint and last_ckpt < len(baseline):
+            on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
         return baseline, selfhelp
 
     def run_status_quo(
         self,
         prompts: list[StatusQuoPrompt],
+        on_checkpoint=None,
+        checkpoint_every: int = 20,
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in tqdm(prompts, desc="status_quo", unit="prompt"):
+        last_ckpt = 0
+        for i, p in enumerate(tqdm(prompts, desc="status_quo", unit="prompt")):
             baseline.append(self._run_sq_one(p, bias_type="status_quo", condition="baseline"))
             selfhelp.append(self._run_sq_one(p, bias_type="status_quo", condition="selfhelp"))
+            if on_checkpoint and (i + 1) % checkpoint_every == 0:
+                on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
+                last_ckpt = len(baseline)
+        if on_checkpoint and last_ckpt < len(baseline):
+            on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
         return baseline, selfhelp
 
     def run_primacy(
         self,
         prompts: list[StatusQuoPrompt],
+        on_checkpoint=None,
+        checkpoint_every: int = 20,
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for p in tqdm(prompts, desc="primacy", unit="prompt"):
+        last_ckpt = 0
+        for i, p in enumerate(tqdm(prompts, desc="primacy", unit="prompt")):
             baseline.append(self._run_sq_one(p, bias_type="primacy", condition="baseline"))
             selfhelp.append(self._run_sq_one(p, bias_type="primacy", condition="selfhelp"))
+            if on_checkpoint and (i + 1) % checkpoint_every == 0:
+                on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
+                last_ckpt = len(baseline)
+        if on_checkpoint and last_ckpt < len(baseline):
+            on_checkpoint(baseline[last_ckpt:], selfhelp[last_ckpt:])
         return baseline, selfhelp
 
     def run_anchoring(
         self,
         sets: list[AnchoringSet],
+        on_checkpoint=None,
+        checkpoint_every: int = 1,
     ) -> tuple[list[PromptResult], list[PromptResult]]:
         baseline, selfhelp = [], []
-        for student_set in tqdm(sets, desc="anchoring", unit="set"):
+        last_ckpt_b, last_ckpt_s = 0, 0
+        for i, student_set in enumerate(tqdm(sets, desc="anchoring", unit="set")):
             b_results, sh_results = self._run_anchoring_set(student_set)
             baseline.extend(b_results)
             selfhelp.extend(sh_results)
+            if on_checkpoint and (i + 1) % checkpoint_every == 0:
+                on_checkpoint(baseline[last_ckpt_b:], selfhelp[last_ckpt_s:])
+                last_ckpt_b = len(baseline)
+                last_ckpt_s = len(selfhelp)
+        if on_checkpoint and last_ckpt_b < len(baseline):
+            on_checkpoint(baseline[last_ckpt_b:], selfhelp[last_ckpt_s:])
         return baseline, selfhelp
 
     # ── Metric computation ─────────────────────────────────────────────────────

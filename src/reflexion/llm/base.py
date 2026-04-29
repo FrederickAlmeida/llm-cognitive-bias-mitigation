@@ -52,7 +52,7 @@ def calculate_cost(model: str, input_tokens: int, cached_input_tokens: int, outp
 
 
 class LLMClient(ABC):
-    max_retries: int = 3
+    max_retries: int = 10
     retry_delay: float = 60.0  # seconds
 
     def complete(
