@@ -1,0 +1,20 @@
+actor:
+  llm_provider: "groq"
+  llm_model: "llama-3.1-8b-instant"
+
+reflection:
+  llm_provider: "groq"
+  llm_model: "llama-3.1-8b-instant"
+
+dataset:
+  biases:
+    - framing
+    - group_attribution
+    - anchoring
+    - primacy
+    - status_quo
+
+output:
+  results_dir: "results/"
+
+prompts_dir: "prompts/"
