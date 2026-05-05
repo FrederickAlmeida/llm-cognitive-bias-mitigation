@@ -18,9 +18,7 @@ from dataclasses import dataclass, field
 
 from tqdm import tqdm
 
-from src.reflexion.actor import Trajectory
 from src.reflexion.agent import PromptLoader
-from src.reflexion.evaluator import EvalResult
 from src.reflexion.llm import LLMClient
 from src.reflexion.llm.base import TokenUsage
 from src.reflexion.memory import MemoryStore
@@ -71,15 +69,15 @@ class ReflexionStepResult:
 class _BiasSelfReflection(SelfReflection):
     """Uses the 'bias_reflection' prompt key instead of 'self_reflection'."""
 
-    def generate(self, question, trajectory, eval_result, memory):
+    def generate(self, question, prior_answer, feedback, memory):  # type: ignore[override]
         system = self.prompt_loader.render("bias_reflection", "system", {})
         user = self.prompt_loader.render(
             "bias_reflection",
             "user",
             {
                 "question": question,
-                "trajectory": trajectory.format_for_reflection(),
-                "feedback": eval_result.feedback,
+                "prior_answer": prior_answer,
+                "feedback": feedback,
                 "memory": memory.format_for_prompt(),
             },
         )
@@ -593,7 +591,4 @@ class ReflexionBiasRunner:
         feedback: str,
         memory: MemoryStore,
     ):
-        trajectory = Trajectory(question=question, final_answer=prior_raw_answer)
-        trajectory.append_step("answer", prior_raw_answer)
-        eval_result = EvalResult(passed=False, score=0.0, feedback=feedback)
-        return self._reflection.generate(question, trajectory, eval_result, memory)
+        return self._reflection.generate(question, prior_raw_answer, feedback, memory)

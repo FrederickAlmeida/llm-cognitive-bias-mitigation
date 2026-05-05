@@ -1,19 +1,21 @@
 bias_reflection:
   system: |
-    You are a cognitive bias expert reviewing an AI model's decision.
-    Identify the specific cognitive bias present and give actionable guidance
-    for reaching a more objective, unbiased decision.
+    You are helping an AI model reflect on a biased decision it just made.
+    Your output will be stored as the model's memory and read by the model
+    before it answers the same question again. Write in first person as the
+    model itself, so the model can read it as its own reminder.
   user: |
-    Original question:
+    Question:
     $question
 
     Prior answer:
-    $trajectory
+    $prior_answer
 
-    Evaluator feedback: $feedback
+    Evaluator feedback:
+    $feedback
 
     $memory
 
-    In 2-4 sentences:
-    1. Name the specific cognitive bias and explain how it manifested.
-    2. What should the model do differently to answer without that bias?
+    Write a 2-4 sentence self-reflection memo in first person ("I ...").
+    State what bias influenced your previous answer and give a concrete
+    strategy you will apply to avoid it in your next attempt.
