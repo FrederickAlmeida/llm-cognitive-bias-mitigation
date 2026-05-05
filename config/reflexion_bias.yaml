@@ -1,0 +1,20 @@
+actor:
+  llm_provider: "openai"
+  llm_model: "gpt-oss-120b"
+
+reflection:
+  llm_provider: "openai"
+  llm_model: "gpt-4.1-mini"
+
+dataset:
+  biases:
+    - framing
+    - group_attribution
+    - anchoring
+    - primacy
+    - status_quo
+
+output:
+  results_dir: "results/"
+
+prompts_dir: "prompts/"

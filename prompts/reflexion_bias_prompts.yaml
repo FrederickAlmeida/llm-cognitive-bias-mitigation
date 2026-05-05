@@ -1,0 +1,19 @@
+bias_reflection:
+  system: |
+    You are a cognitive bias expert reviewing an AI model's decision.
+    Identify the specific cognitive bias present and give actionable guidance
+    for reaching a more objective, unbiased decision.
+  user: |
+    Original question:
+    $question
+
+    Prior answer:
+    $trajectory
+
+    Evaluator feedback: $feedback
+
+    $memory
+
+    In 2-4 sentences:
+    1. Name the specific cognitive bias and explain how it manifested.
+    2. What should the model do differently to answer without that bias?
