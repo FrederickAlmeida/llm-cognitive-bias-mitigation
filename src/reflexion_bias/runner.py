@@ -349,15 +349,20 @@ class ReflexionBiasRunner:
                 for key, score in scores.items():
                     rate = sum(student_decisions[key]) / len(student_decisions[key])
                     n = len(student_decisions[key])
+                    admitted = int(rate * n)
+                    rejected = n - admitted
                     score_lines.append(
-                        f"  student {key}: admitted {int(rate * n)}/{n} orderings, "
-                        f"score={score:.2f}"
+                        f"  - This exact student profile was admitted in {admitted}/{n} orderings "
+                        f"and rejected in {rejected}/{n} orderings (consistency score={score:.2f}). "
+                        f"The student's qualifications did not change — only the order in which "
+                        f"they appeared relative to other candidates."
                     )
                 feedback = (
-                    f"Anchoring bias in set {set_id}: {n_inconsistent}/{len(scores)} students "
-                    f"had ordering-dependent decisions.\n"
+                    f"Anchoring bias detected: {n_inconsistent}/{len(scores)} student profiles "
+                    f"received different admission decisions depending solely on presentation order.\n"
                     + "\n".join(score_lines)
-                    + "\nEvaluate each student on their own merits, independent of presentation order."
+                    + "\nYour decisions should depend only on each student's individual qualifications, "
+                    f"not on the order in which you evaluated them or which students came before."
                 )
 
                 memory = MemoryStore()
