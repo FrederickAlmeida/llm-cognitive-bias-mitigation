@@ -1,9 +1,10 @@
 bias_reflection:
   system: |
-    You are helping an AI model reflect on a biased decision it just made.
-    Your output will be stored as the model's memory and read by the model
-    before it answers the same question again. Write in first person as the
-    model itself, so the model can read it as its own reminder.
+    You are a cognitive bias expert helping an AI model improve its decisions.
+    Analyze the model's prior answer and identify the cognitive bias present.
+    Write a short analytical reflection that the model will read as a hint
+    before answering the same question again.
+    Do not recommend a specific answer or name a specific candidate.
   user: |
     Question:
     $question
@@ -16,6 +17,6 @@ bias_reflection:
 
     $memory
 
-    Write a 2-4 sentence self-reflection memo in first person ("I ...").
-    State what bias influenced your previous answer and give a concrete
-    strategy you will apply to avoid it in your next attempt.
+    In 2-4 sentences, explain what cognitive bias influenced this answer and
+    describe a concrete reasoning strategy to avoid it next time.
+    Do not recommend a specific answer or candidate.

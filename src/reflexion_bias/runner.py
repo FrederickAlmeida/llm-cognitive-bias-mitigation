@@ -208,8 +208,8 @@ class ReflexionBiasRunner:
 
                 for j, row in enumerate([admit_row, reject_row]):
                     resp = self._actor_llm.complete(
-                        _ADMIT_REJECT_SYSTEM + _memory_suffix(memory),
-                        row["original_prompt"],
+                        _ADMIT_REJECT_SYSTEM,
+                        row["original_prompt"] + _memory_suffix(memory),
                         temperature=0.0, max_tokens=1024, json_mode=True,
                     )
                     usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
@@ -280,8 +280,8 @@ class ReflexionBiasRunner:
 
                 for j, row in enumerate([female_row, male_row]):
                     resp = self._actor_llm.complete(
-                        _YES_NO_SYSTEM + _memory_suffix(memory),
-                        row["original_prompt"],
+                        _YES_NO_SYSTEM,
+                        row["original_prompt"] + _memory_suffix(memory),
                         temperature=0.0, max_tokens=1024, json_mode=True,
                     )
                     usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
@@ -370,16 +370,21 @@ class ReflexionBiasRunner:
                     memory.add(prior[set_id])
 
                 rep_row = set_rows[0]
+                # Pass only the decision, not the full reasoning JSON — passing
+                # the actor's reasoning causes the reflection model to echo
+                # credential-specific language (e.g. "GPA below average") back
+                # as boilerplate, which leaks evaluative hints to the actor.
+                rep_decision = rep_row.get("parsed_answer", "reject")
                 refl_text, refl_resp = self._reflect(
-                    rep_row["original_prompt"], rep_row.get("raw_answer", ""),
+                    rep_row["original_prompt"], rep_decision,
                     feedback, memory,
                 )
                 memory.add(refl_text)
 
                 for j, row in enumerate(set_rows):
                     resp = self._actor_llm.complete(
-                        system + _memory_suffix(memory),
-                        row["original_prompt"],
+                        system,
+                        row["original_prompt"] + _memory_suffix(memory),
                         temperature=0.0, max_tokens=1024, json_mode=True,
                     )
                     decision = "admit" if _parse_admit_reject(resp.content) == 1 else "reject"
@@ -446,8 +451,8 @@ class ReflexionBiasRunner:
             memory.add(refl_text)
 
             resp = self._actor_llm.complete(
-                _OPTION_SYSTEM + _memory_suffix(memory),
-                row["original_prompt"],
+                _OPTION_SYSTEM,
+                row["original_prompt"] + _memory_suffix(memory),
                 temperature=0.0, max_tokens=1024, json_mode=True,
             )
             results.append(ReflexionStepResult(
@@ -513,8 +518,8 @@ class ReflexionBiasRunner:
             memory.add(refl_text)
 
             resp = self._actor_llm.complete(
-                _OPTION_SYSTEM + _memory_suffix(memory),
-                row["original_prompt"],
+                _OPTION_SYSTEM,
+                row["original_prompt"] + _memory_suffix(memory),
                 temperature=0.0, max_tokens=1024, json_mode=True,
             )
             results.append(ReflexionStepResult(
