@@ -329,7 +329,7 @@ class SelfHelpRunner:
 
         resp = self._model.complete(
             _ADMIT_REJECT_SYSTEM, prompt_to_run,
-            temperature=0.0, max_tokens=1024, json_mode=True,
+            temperature=0.0, max_tokens=2048, json_mode=True,
         )
         usage.append(resp.usage)
 
@@ -358,7 +358,7 @@ class SelfHelpRunner:
 
         resp = self._model.complete(
             _YES_NO_SYSTEM, prompt_to_run,
-            temperature=0.0, max_tokens=1024, json_mode=True,
+            temperature=0.0, max_tokens=2048, json_mode=True,
         )
         usage.append(resp.usage)
 
@@ -387,7 +387,7 @@ class SelfHelpRunner:
 
         resp = self._model.complete(
             _OPTION_SYSTEM, prompt_to_run,
-            temperature=0.0, max_tokens=1024, json_mode=True,
+            temperature=0.0, max_tokens=2048, json_mode=True,
         )
         usage.append(resp.usage)
         option = _parse_option(resp.content)
@@ -451,7 +451,7 @@ class SelfHelpRunner:
 
             resp = self._model.complete(
                 self._ANCHORING_BASE_SYSTEM + " " + _ADMIT_REJECT_SYSTEM,
-                user_prompt, temperature=0.0, max_tokens=1024, json_mode=True,
+                user_prompt, temperature=0.0, max_tokens=2048, json_mode=True,
             )
             decision = "admit" if _parse_admit_reject(resp.content) == 1 else "reject"
             decisions.append(decision)

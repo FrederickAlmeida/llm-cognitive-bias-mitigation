@@ -1,10 +1,10 @@
 actor:
   llm_provider: "deepinfra"
-  llm_model: "openai/gpt-oss-120b"
+  llm_model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 reflection:
   llm_provider: "deepinfra"
-  llm_model: "openai/gpt-oss-120b"
+  llm_model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 dataset:
   biases:

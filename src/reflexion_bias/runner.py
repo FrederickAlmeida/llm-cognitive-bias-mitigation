@@ -210,7 +210,7 @@ class ReflexionBiasRunner:
                     resp = self._actor_llm.complete(
                         _ADMIT_REJECT_SYSTEM,
                         row["original_prompt"] + _memory_suffix(memory),
-                        temperature=0.0, max_tokens=1024, json_mode=True,
+                        temperature=0.0, max_tokens=2048, json_mode=True,
                     )
                     usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
                     results.append(ReflexionStepResult(
@@ -282,7 +282,7 @@ class ReflexionBiasRunner:
                     resp = self._actor_llm.complete(
                         _YES_NO_SYSTEM,
                         row["original_prompt"] + _memory_suffix(memory),
-                        temperature=0.0, max_tokens=1024, json_mode=True,
+                        temperature=0.0, max_tokens=2048, json_mode=True,
                     )
                     usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
                     results.append(ReflexionStepResult(
@@ -385,7 +385,7 @@ class ReflexionBiasRunner:
                     resp = self._actor_llm.complete(
                         system,
                         row["original_prompt"] + _memory_suffix(memory),
-                        temperature=0.0, max_tokens=1024, json_mode=True,
+                        temperature=0.0, max_tokens=2048, json_mode=True,
                     )
                     decision = "admit" if _parse_admit_reject(resp.content) == 1 else "reject"
                     usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
@@ -453,7 +453,7 @@ class ReflexionBiasRunner:
             resp = self._actor_llm.complete(
                 _OPTION_SYSTEM,
                 row["original_prompt"] + _memory_suffix(memory),
-                temperature=0.0, max_tokens=1024, json_mode=True,
+                temperature=0.0, max_tokens=2048, json_mode=True,
             )
             results.append(ReflexionStepResult(
                 bias_type="primacy", step=step, prompt_id=pid,
@@ -520,7 +520,7 @@ class ReflexionBiasRunner:
             resp = self._actor_llm.complete(
                 _OPTION_SYSTEM,
                 row["original_prompt"] + _memory_suffix(memory),
-                temperature=0.0, max_tokens=1024, json_mode=True,
+                temperature=0.0, max_tokens=2048, json_mode=True,
             )
             results.append(ReflexionStepResult(
                 bias_type="status_quo", step=step, prompt_id=pid,
