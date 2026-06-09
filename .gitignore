@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 .env
 results/
+.DS_Store
+**/.DS_Store
