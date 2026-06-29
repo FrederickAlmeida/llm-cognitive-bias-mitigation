@@ -153,8 +153,28 @@ def _exclude_by_set_id(rows: list[dict], done: set[int]) -> list[dict]:
 
 # ── Prior-reflection loaders (for cumulative memory in step N≥2) ──────────────
 
-def _prior_reflections_framing_ga(path: str) -> dict[int, str]:
-    """Return {prompt_id: first non-empty reflection_text} from a step N-1 CSV."""
+def _prior_reflections_framing_ga(path: str) -> dict[tuple[int, str], str]:
+    """Return {(prompt_id, sub_condition): reflection_text} from a step N-1 CSV.
+
+    Under design (b) each side of a pair carries its OWN reflection, so the
+    chain across steps must be keyed per (prompt_id, sub_condition), not per
+    prompt_id.
+    """
+    result: dict[tuple[int, str], str] = {}
+    for row in _load_csv(path):
+        key = (int(row["prompt_id"]), row.get("sub_condition", ""))
+        refl = row.get("reflection_text", "").strip()
+        if key not in result and refl:
+            result[key] = refl
+    return result
+
+
+def _prior_reflections_by_pid(path: str) -> dict[int, str]:
+    """Return {prompt_id: reflection_text} from a step N-1 CSV.
+
+    For unconditional biases (primacy, status_quo) each row is its own prompt_id
+    with a single reflection, so per-prompt_id keying is correct.
+    """
     result: dict[int, str] = {}
     for row in _load_csv(path):
         pid = int(row["prompt_id"])
@@ -281,8 +301,10 @@ def main() -> None:
             prior_path = f"{prefix}_reflexion_{step - 1}.csv"
             if bias == "anchoring":
                 prior_reflections = _prior_reflections_anchoring(prior_path)
-            else:
+            elif bias in ("framing", "group_attribution"):
                 prior_reflections = _prior_reflections_framing_ga(prior_path)
+            else:  # primacy, status_quo — keyed by prompt_id
+                prior_reflections = _prior_reflections_by_pid(prior_path)
 
         # Check how many pairs/sets are already done (resume)
         if bias == "anchoring":

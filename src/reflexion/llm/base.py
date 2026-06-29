@@ -53,7 +53,9 @@ def calculate_cost(model: str, input_tokens: int, cached_input_tokens: int, outp
 
 class LLMClient(ABC):
     max_retries: int = 10
-    retry_delay: float = 60.0  # seconds
+    retry_delay: float = 60.0        # seconds, for real API failures (5xx/timeout)
+    ratelimit_retry_delay: float = 5.0  # seconds, for 429s (reset quickly)
+    empty_retry_delay: float = 5.0   # seconds, for empty/blank responses
 
     def complete(
         self,
@@ -63,15 +65,30 @@ class LLMClient(ABC):
         max_tokens: int = 1024,
         json_mode: bool = False,
     ) -> LLMResponse:
+        # Retries BOTH API exceptions AND empty responses. DeepInfra occasionally
+        # returns an empty completion (not an exception); for our structured tasks
+        # (JSON answer / non-empty reflection) an empty body is always a failure,
+        # so we resend until we get content. Without this, an empty row could be
+        # written and then skipped by resume (prompt_id seen) — silently lost.
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                return self._complete(system_prompt, user_prompt, temperature, max_tokens, json_mode)
+                resp = self._complete(system_prompt, user_prompt, temperature, max_tokens, json_mode)
+                if resp.content and resp.content.strip():
+                    return resp
+                last_exc = RuntimeError("empty response")
+                if attempt < self.max_retries:
+                    print(f"[retry {attempt}/{self.max_retries}] empty response "
+                          f"— waiting {self.empty_retry_delay:.0f}s")
+                    time.sleep(self.empty_retry_delay)
             except Exception as exc:
                 last_exc = exc
+                msg = str(exc).lower()
+                is_rate = "429" in msg or "rate limit" in msg or "rate_limit" in msg
+                delay = self.ratelimit_retry_delay if is_rate else self.retry_delay
                 if attempt < self.max_retries:
-                    print(f"[retry {attempt}/{self.max_retries}] {exc} — waiting {self.retry_delay:.0f}s")
-                    time.sleep(self.retry_delay)
+                    print(f"[retry {attempt}/{self.max_retries}] {exc} — waiting {delay:.0f}s")
+                    time.sleep(delay)
         raise last_exc
 
     @abstractmethod
