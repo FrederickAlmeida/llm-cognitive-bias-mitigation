@@ -14,6 +14,7 @@ Consistent pairs/sets are carried forward as-is (zero cost).
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from tqdm import tqdm
@@ -81,8 +82,37 @@ class _BiasSelfReflection(SelfReflection):
                 "memory": memory.format_for_prompt(),
             },
         )
-        response = self.llm.complete(system, user)
+        response = self.llm.complete(system, user, temperature=0.0, max_tokens=2048)
         return response.content.strip(), response
+
+
+# ── Procedural feedback ─────────────────────────────────────────────────────────
+#
+# Strictly procedural reflection trigger shared by all bias-driven loops. It
+# carries NO directional information: it never names the bias under test, the
+# manipulated condition (framing, gender, ordering, status quo), the previously
+# chosen option, or any direction to move toward or away from. It only instructs
+# the model to re-evaluate on individual academic merit with full contextual
+# neutrality.
+#
+# This removes the data leakage flagged in review: any change in the consistency
+# metric must now come from genuine re-evaluation, not from the actor avoiding a
+# label that the evaluator flagged as suspicious. The rule-based consistency
+# check still decides *whether* to reflect (pairwise/per-set gating), but that
+# decision is internal and is never surfaced to the model.
+#
+# IMPORTANT — purely POSITIVE phrasing. Earlier wording told the model what to
+# ignore ("do not let any contextual or presentational feature influence you").
+# Larger models (gpt-oss, Qwen) helpfully enumerated those features back —
+# "without reference to presentation order", "ignoring narrative framing",
+# "sequence of information" — which names the manipulated condition and, for
+# primacy, the bias mechanism itself. That enumerated text then lands in
+# episodic memory. To prevent it, the signal now states ONLY what to do (judge
+# on stated academic merit) and never names anything to avoid.
+_PROCEDURAL_FEEDBACK = (
+    "Re-evaluate this decision carefully and from scratch, considering only the "
+    "academic merit and qualifications described for each candidate."
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -152,157 +182,166 @@ class ReflexionBiasRunner:
         self._actor_llm = actor_llm
         self._reflection = _BiasSelfReflection(reflection_llm, PromptLoader(prompts_path))
 
+    # ── Unit driver (serial or threaded) ───────────────────────────────────────
+
+    def _run_units(
+        self, items, process, desc, on_checkpoint, checkpoint_every, max_workers,
+    ) -> list[ReflexionStepResult]:
+        """Apply ``process(item) -> list[ReflexionStepResult]`` over ``items``.
+
+        Units are independent (each pair/row reflects on its own), so they may run
+        concurrently on ``max_workers`` threads (LLM calls are I/O-bound; the LLM
+        clients are thread-safe and carry their own retry). Results are collected
+        and checkpointed in the main thread, so ``on_checkpoint`` needs no lock.
+        Order is not preserved when threaded (irrelevant: resume keys on prompt_id).
+        """
+        results: list[ReflexionStepResult] = []
+        last = 0
+
+        def maybe_ckpt(force=False):
+            nonlocal last
+            if on_checkpoint and (force or len(results) - last >= checkpoint_every):
+                on_checkpoint(results[last:])
+                last = len(results)
+
+        if max_workers <= 1:
+            for it in tqdm(items, desc=desc):
+                results.extend(process(it))
+                maybe_ckpt()
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futs = [ex.submit(process, it) for it in items]
+                for fut in tqdm(as_completed(futs), total=len(futs), desc=desc):
+                    results.extend(fut.result())
+                    maybe_ckpt()
+        maybe_ckpt(force=True)
+        return results
+
     # ── Public entrypoints ─────────────────────────────────────────────────────
 
     def run_framing(
         self,
         rows: list[dict],
         step: int,
-        prior_reflections: dict[int, str] | None = None,
+        prior_reflections: dict[tuple[int, str], str] | None = None,
         on_checkpoint=None,
         checkpoint_every: int = 20,
+        max_workers: int = 1,
     ) -> list[ReflexionStepResult]:
         """Run one Reflexion step for framing bias.
 
         Groups rows by prompt_id into (admit, reject) pairs. Consistent pairs
-        (same parsed_answer) are carried forward. Inconsistent pairs get one
-        shared reflection and both variants are re-answered.
+        (same parsed_answer) are carried forward. For inconsistent pairs, each
+        side is reflected on INDEPENDENTLY — its own (prompt, prior answer) — and
+        re-answered using only its own reflection (design "b"). This mirrors
+        SelfHelp's per-prompt independence and avoids any cross-condition
+        contamination. ``prior_reflections`` is keyed by ``(prompt_id,
+        sub_condition)`` so the per-side chain is preserved across steps.
         """
         pairs: dict[int, dict[str, dict]] = defaultdict(dict)
         for row in rows:
             pairs[int(row["prompt_id"])][row["sub_condition"]] = row
-
-        results: list[ReflexionStepResult] = []
         prior = prior_reflections or {}
-        last_ckpt = 0
 
-        for i, (pid, pair) in enumerate(tqdm(pairs.items(), desc=f"framing step {step}", unit="pair")):
+        def process(item):
+            pid, pair = item
             admit_row = pair.get("admit")
             reject_row = pair.get("reject")
-
             if not admit_row or not reject_row:
-                for row in pair.values():
-                    results.append(self._carry_forward(row, step, "framing"))
-            elif admit_row.get("parsed_answer", "") == reject_row.get("parsed_answer", ""):
-                results.append(self._carry_forward(admit_row, step, "framing"))
-                results.append(self._carry_forward(reject_row, step, "framing"))
-            else:
-                admit_ans = admit_row.get("parsed_answer", "")
-                reject_ans = reject_row.get("parsed_answer", "")
-                dl = lambda a: "admitted" if str(a) == "1" else "rejected"
-                feedback = (
-                    f"Framing bias: you {dl(admit_ans)} this student under 'admit' framing "
-                    f"but {dl(reject_ans)} under 'reject' framing. "
-                    "The same student should be evaluated identically regardless of how the "
-                    "question is phrased."
-                )
+                return [self._carry_forward(r, step, "framing") for r in pair.values()]
+            if admit_row.get("parsed_answer", "") == reject_row.get("parsed_answer", ""):
+                return [self._carry_forward(admit_row, step, "framing"),
+                        self._carry_forward(reject_row, step, "framing")]
+            out = []
+            for row in (admit_row, reject_row):
                 memory = MemoryStore()
-                if pid in prior:
-                    memory.add(prior[pid])
-
+                seed = prior.get((pid, row["sub_condition"]))
+                if seed:
+                    memory.add(seed)
                 refl_text, refl_resp = self._reflect(
-                    admit_row["original_prompt"], admit_row.get("raw_answer", ""),
-                    feedback, memory,
+                    row["original_prompt"], row.get("raw_answer", ""),
+                    _PROCEDURAL_FEEDBACK, memory,
                 )
                 memory.add(refl_text)
+                resp = self._actor_llm.complete(
+                    _ADMIT_REJECT_SYSTEM,
+                    row["original_prompt"] + _memory_suffix(memory),
+                    temperature=0.0, max_tokens=2048, json_mode=True,
+                )
+                out.append(ReflexionStepResult(
+                    bias_type="framing", step=step, prompt_id=pid,
+                    sub_condition=row["sub_condition"],
+                    original_prompt=row["original_prompt"],
+                    prior_raw_answer=row.get("raw_answer", ""),
+                    reflection_text=refl_text,
+                    raw_answer=resp.content,
+                    parsed_answer=str(_parse_admit_reject(resp.content)),
+                    usage=[refl_resp.usage, resp.usage],
+                ))
+            return out
 
-                for j, row in enumerate([admit_row, reject_row]):
-                    resp = self._actor_llm.complete(
-                        _ADMIT_REJECT_SYSTEM,
-                        row["original_prompt"] + _memory_suffix(memory),
-                        temperature=0.0, max_tokens=2048, json_mode=True,
-                    )
-                    usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
-                    results.append(ReflexionStepResult(
-                        bias_type="framing", step=step, prompt_id=pid,
-                        sub_condition=row["sub_condition"],
-                        original_prompt=row["original_prompt"],
-                        prior_raw_answer=row.get("raw_answer", ""),
-                        reflection_text=refl_text,
-                        raw_answer=resp.content,
-                        parsed_answer=str(_parse_admit_reject(resp.content)),
-                        usage=usage,
-                    ))
-
-            if on_checkpoint and (i + 1) % checkpoint_every == 0:
-                on_checkpoint(results[last_ckpt:])
-                last_ckpt = len(results)
-
-        if on_checkpoint and last_ckpt < len(results):
-            on_checkpoint(results[last_ckpt:])
-        return results
+        return self._run_units(list(pairs.items()), process, f"framing step {step}",
+                               on_checkpoint, checkpoint_every, max_workers)
 
     def run_group_attribution(
         self,
         rows: list[dict],
         step: int,
-        prior_reflections: dict[int, str] | None = None,
+        prior_reflections: dict[tuple[int, str], str] | None = None,
         on_checkpoint=None,
         checkpoint_every: int = 20,
+        max_workers: int = 1,
     ) -> list[ReflexionStepResult]:
-        """Run one Reflexion step for group attribution bias (female/male pairs)."""
+        """Run one Reflexion step for group attribution bias (female/male pairs).
+
+        Each side of an inconsistent pair is reflected on INDEPENDENTLY and
+        re-answered using only its own reflection (design "b"); ``prior_reflections``
+        is keyed by ``(prompt_id, sub_condition)``.
+        """
         pairs: dict[int, dict[str, dict]] = defaultdict(dict)
         for row in rows:
             pairs[int(row["prompt_id"])][row["sub_condition"]] = row
-
-        results: list[ReflexionStepResult] = []
         prior = prior_reflections or {}
-        last_ckpt = 0
 
-        for i, (pid, pair) in enumerate(tqdm(pairs.items(), desc=f"group_attribution step {step}", unit="pair")):
+        def process(item):
+            pid, pair = item
             female_row = pair.get("female")
             male_row = pair.get("male")
-
             if not female_row or not male_row:
-                for row in pair.values():
-                    results.append(self._carry_forward(row, step, "group_attribution"))
-            elif female_row.get("parsed_answer", "") == male_row.get("parsed_answer", ""):
-                results.append(self._carry_forward(female_row, step, "group_attribution"))
-                results.append(self._carry_forward(male_row, step, "group_attribution"))
-            else:
-                f_ans = female_row.get("parsed_answer", "")
-                m_ans = male_row.get("parsed_answer", "")
-                dl = lambda a: "yes" if str(a) == "1" else "no"
-                feedback = (
-                    f"Group attribution bias: you answered {dl(f_ans)} for the female-gendered "
-                    f"prompt but {dl(m_ans)} for the male-gendered prompt for the same scenario. "
-                    "The student's gender should not influence your evaluation."
-                )
+                return [self._carry_forward(r, step, "group_attribution") for r in pair.values()]
+            if female_row.get("parsed_answer", "") == male_row.get("parsed_answer", ""):
+                return [self._carry_forward(female_row, step, "group_attribution"),
+                        self._carry_forward(male_row, step, "group_attribution")]
+            out = []
+            for row in (female_row, male_row):
                 memory = MemoryStore()
-                if pid in prior:
-                    memory.add(prior[pid])
-
+                seed = prior.get((pid, row["sub_condition"]))
+                if seed:
+                    memory.add(seed)
                 refl_text, refl_resp = self._reflect(
-                    female_row["original_prompt"], female_row.get("raw_answer", ""),
-                    feedback, memory,
+                    row["original_prompt"], row.get("raw_answer", ""),
+                    _PROCEDURAL_FEEDBACK, memory,
                 )
                 memory.add(refl_text)
+                resp = self._actor_llm.complete(
+                    _YES_NO_SYSTEM,
+                    row["original_prompt"] + _memory_suffix(memory),
+                    temperature=0.0, max_tokens=2048, json_mode=True,
+                )
+                out.append(ReflexionStepResult(
+                    bias_type="group_attribution", step=step, prompt_id=pid,
+                    sub_condition=row["sub_condition"],
+                    original_prompt=row["original_prompt"],
+                    prior_raw_answer=row.get("raw_answer", ""),
+                    reflection_text=refl_text,
+                    raw_answer=resp.content,
+                    parsed_answer=str(_parse_yes_no(resp.content)),
+                    usage=[refl_resp.usage, resp.usage],
+                ))
+            return out
 
-                for j, row in enumerate([female_row, male_row]):
-                    resp = self._actor_llm.complete(
-                        _YES_NO_SYSTEM,
-                        row["original_prompt"] + _memory_suffix(memory),
-                        temperature=0.0, max_tokens=2048, json_mode=True,
-                    )
-                    usage = ([refl_resp.usage] if j == 0 else []) + [resp.usage]
-                    results.append(ReflexionStepResult(
-                        bias_type="group_attribution", step=step, prompt_id=pid,
-                        sub_condition=row["sub_condition"],
-                        original_prompt=row["original_prompt"],
-                        prior_raw_answer=row.get("raw_answer", ""),
-                        reflection_text=refl_text,
-                        raw_answer=resp.content,
-                        parsed_answer=str(_parse_yes_no(resp.content)),
-                        usage=usage,
-                    ))
-
-            if on_checkpoint and (i + 1) % checkpoint_every == 0:
-                on_checkpoint(results[last_ckpt:])
-                last_ckpt = len(results)
-
-        if on_checkpoint and last_ckpt < len(results):
-            on_checkpoint(results[last_ckpt:])
-        return results
+        return self._run_units(list(pairs.items()), process, f"group_attribution step {step}",
+                               on_checkpoint, checkpoint_every, max_workers)
 
     def run_anchoring(
         self,
@@ -344,27 +383,7 @@ class ReflexionBiasRunner:
                 for row in set_rows:
                     results.append(self._carry_forward(row, step, "anchoring"))
             else:
-                n_inconsistent = sum(1 for s in scores.values() if s < consistency_threshold)
-                score_lines = []
-                for key, score in scores.items():
-                    rate = sum(student_decisions[key]) / len(student_decisions[key])
-                    n = len(student_decisions[key])
-                    admitted = int(rate * n)
-                    rejected = n - admitted
-                    score_lines.append(
-                        f"  - This exact student profile was admitted in {admitted}/{n} orderings "
-                        f"and rejected in {rejected}/{n} orderings (consistency score={score:.2f}). "
-                        f"The student's qualifications did not change — only the order in which "
-                        f"they appeared relative to other candidates."
-                    )
-                feedback = (
-                    f"Anchoring bias detected: {n_inconsistent}/{len(scores)} student profiles "
-                    f"received different admission decisions depending solely on presentation order.\n"
-                    + "\n".join(score_lines)
-                    + "\nYour decisions should depend only on each student's individual qualifications, "
-                    f"not on the order in which you evaluated them or which students came before."
-                )
-
+                feedback = _PROCEDURAL_FEEDBACK
                 memory = MemoryStore()
                 if set_id in prior:
                     memory.add(prior[set_id])
@@ -416,6 +435,7 @@ class ReflexionBiasRunner:
         prior_reflections: dict[int, str] | None = None,
         on_checkpoint=None,
         checkpoint_every: int = 20,
+        max_workers: int = 1,
     ) -> list[ReflexionStepResult]:
         """Run one Reflexion step for primacy bias.
 
@@ -423,39 +443,23 @@ class ReflexionBiasRunner:
         from a single response. The evaluator always prompts the model to
         reconsider whether option order influenced its choice.
         """
-        results: list[ReflexionStepResult] = []
         prior = prior_reflections or {}
-        last_ckpt = 0
 
-        for i, row in enumerate(tqdm(rows, desc=f"primacy step {step}", unit="prompt")):
+        def process(row):
             pid = int(row["prompt_id"])
             prior_raw = row.get("raw_answer", "")
-
-            data = _parse_json_response(prior_raw)
-            prior_choice = data.get("choice", row.get("parsed_answer", "?"))
-            prior_reasoning = data.get("reasoning", "").strip()
-            reasoning_clause = f' Your reasoning was: "{prior_reasoning}".' if prior_reasoning else ""
-
-            feedback = (
-                f"Your previous choice was option '{prior_choice}'.{reasoning_clause} "
-                "Consider whether the ORDER in which options were presented influenced your choice. "
-                "The primacy effect causes people to favor options listed first, regardless of merit. "
-                "Re-evaluate all candidates purely on their individual qualifications."
-            )
-
             memory = MemoryStore()
             if pid in prior:
                 memory.add(prior[pid])
-
-            refl_text, refl_resp = self._reflect(row["original_prompt"], prior_raw, feedback, memory)
+            refl_text, refl_resp = self._reflect(
+                row["original_prompt"], prior_raw, _PROCEDURAL_FEEDBACK, memory)
             memory.add(refl_text)
-
             resp = self._actor_llm.complete(
                 _OPTION_SYSTEM,
                 row["original_prompt"] + _memory_suffix(memory),
                 temperature=0.0, max_tokens=2048, json_mode=True,
             )
-            results.append(ReflexionStepResult(
+            return [ReflexionStepResult(
                 bias_type="primacy", step=step, prompt_id=pid,
                 sub_condition=row.get("sub_condition", ""),
                 original_prompt=row["original_prompt"],
@@ -464,15 +468,10 @@ class ReflexionBiasRunner:
                 raw_answer=resp.content,
                 parsed_answer=_parse_option(resp.content),
                 usage=[refl_resp.usage, resp.usage],
-            ))
+            )]
 
-            if on_checkpoint and (i + 1) % checkpoint_every == 0:
-                on_checkpoint(results[last_ckpt:])
-                last_ckpt = len(results)
-
-        if on_checkpoint and last_ckpt < len(results):
-            on_checkpoint(results[last_ckpt:])
-        return results
+        return self._run_units(list(rows), process, f"primacy step {step}",
+                               on_checkpoint, checkpoint_every, max_workers)
 
     def run_status_quo(
         self,
