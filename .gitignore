@@ -6,3 +6,10 @@ __pycache__/
 results/
 .DS_Store
 **/.DS_Store
+analysis/
+artigo/
+results_sample_b/
+scripts/verify_leakage.py
+scripts/run_sample_b.py
+scripts/dump_corrected.py
+scripts/demo_leakage_inputs.py
